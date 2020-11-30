@@ -1,0 +1,924 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: Highly available LAMP_Multi_AZ
+
+Parameters :
+  ClientPrefix:
+    Description: " Client AWS Prefix (XYZ) "
+    Type: String
+    Default: XYZ
+
+  DBInstanceType:
+    Description: MySQL RDS
+    Type: String
+    Default: db.r5.large
+
+  WebServerKeyName:
+    Description: The key pair to establish a SSH connection to the web servers.
+    Type: 'AWS::EC2::KeyPair::KeyName'
+
+  Mappings:
+    AWSInstanceType2Arch:
+      t2.micro:
+        'Arch': '64'
+      m5.large:
+        'Arch': '64'
+      db.r5.large:
+        'Arch': '64'
+
+    AWSRegionArch2AMI:
+      us-east-1:
+        '64': 'ami-0ac80df6eff0e70b5'
+      us-east-2:
+        '64': 'ami-618fab04'
+      ca-central-1:
+        '64': 'ami-3d299b59'
+
+
+Resources:
+  XYZVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Join [ '', [!Ref ClientPrefix,  'Hosting VPC' ]]
+
+  XYZGateway:
+        Type: AWS::EC2::InternetGateway
+        Properties:
+          Tags:
+          - Key: Name
+            Value: !Join [ '', [!Ref  ClientPrefix, 'Internet Gateway' ]]
+
+  XYZGatewayAttatch:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId:
+        !Ref  XYZGateway
+      VpcId:
+        !Ref  XYZVPC
+
+  XYZ1public:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - '0'
+          - Fn::GetAZs: ''
+      CidrBlock: 10.0.0.0/24
+      VpcId:
+        Ref: XYZVPC
+      Tags:
+        - Key: Name
+          Value: XYZ1public
+
+  XYZ2public:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - '1'
+          - Fn::GetAZs: ''
+      CidrBlock: 10.0.2.0/24
+      VpcId:
+        Ref: XYZVPC
+      Tags:
+        - Key: Name
+          Value: XYZ2public
+
+  WebServer1private:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - '0'
+          - Fn::GetAZs: ''
+      CidrBlock: 10.0.10.0/24
+      VpcId:
+        Ref: XYZVPC
+      Tags:
+        - Key: Name
+          Value: WebServer1private
+
+  WebServer2private:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - '1'
+          - Fn::GetAZs: ''
+      CidrBlock: 10.0.20.0/24
+      VpcId:
+        Ref: XYZVPC
+      Tags:
+        - Key: Name
+          Value: WebServer2private
+
+  RDS1private:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        'Fn::Select':
+          - '0'
+          - 'Fn::GetAZs': ''
+      CidrBlock: 10.0.30.0/24
+      VpcId:
+        Ref: XYZVPC
+      Tags:
+        - Key: Name
+          Value: RDS1private
+
+  RDS2private:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        'Fn::Select':
+          - '1'
+          - 'Fn::GetAZs': ''
+      CidrBlock: 10.0.40.0/24
+      VpcId:
+        Ref: XYZVPC
+      Tags:
+        - Key: Name
+          Value: RDS2private
+
+
+  PublicRT:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        Ref: XYZVPC
+      Tags:
+        - Key: Name
+          Value: PublicRT
+  RouteTableAssociationA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:
+        Ref: XYZ1public
+      RouteTableId:
+        Ref: PublicRT
+  RouteTableAssociationB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:
+        Ref: XYZ2public
+      RouteTableId:
+        Ref: PublicRT
+  RoutePublicNATToInternet:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId:
+        Ref: PublicRT
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId:
+        Ref: InternetGateway
+    DependsOn: VPCGatewayAttachment
+  NATElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc                     ##???
+    DependsOn: VPCGatewayAttachment
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    DependsOn: NATElasticIP
+    Properties:
+      AllocationId:
+        'Fn::GetAtt':
+          - NATElasticIP
+          - AllocationId
+      SubnetId:
+        Ref: XYZ2public
+  NATGatewayRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId:
+        Ref: PrivateRT
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId:
+        Ref: NATGateway
+  PrivateRT:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        Ref: XYZVPC
+      Tags:
+        - Key: Name
+          Value: PrivateRT
+  RouteTableAssociationC:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:
+        Ref: WebServer1private
+      RouteTableId:
+        Ref: PrivateRT
+  RouteTableAssociationD:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId:
+        Ref: WebServer2private
+      RouteTableId:
+        Ref: PrivateRT
+  RouteTableAssociationC:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:
+        Ref: RDSprivate
+      RouteTableId:
+        Ref: PrivateRT
+
+  XYZNACL:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId:
+        Ref: XYZVPC
+      Tags:
+        - Key: Name
+          Value: XYZNACL
+
+  SubnetNetworkAclAssociationC:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      SubnetId:
+        Ref: XYZ1public
+      NetworkAclId:
+        Ref: XYZNACL
+  SubnetNetworkAclAssociationD:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      SubnetId:
+        Ref: XYZ2public
+      NetworkAclId:
+        Ref: XYZNACL
+  XYZNACLEntryIngress100:
+    Type: AWS::EC2::NetworkAclEntry
+    DependsOn: XYZNACL
+    Properties:
+      NetworkAclId:
+        Ref: XYZNACL
+      RuleNumber: '100'
+      Protocol: '6'
+      PortRange:
+        From: '22'
+        To: '22'
+      RuleAction: allow
+      Egress: 'false'
+      CidrBlock: 0.0.0.0/0
+  XYZNACLEntryIngress110:
+    Type: AWS::EC2::NetworkAclEntry
+    DependsOn: XYZNACL
+    Properties:
+      NetworkAclId:
+        Ref: XYZNACL
+      RuleNumber: '110'
+      Protocol: '6'
+      PortRange:
+        From: '80'
+        To: '80'
+      RuleAction: allow
+      Egress: 'false'
+      CidrBlock: 0.0.0.0/0
+  XYZNACLEntryIngress120:
+    Type: AWS::EC2::NetworkAclEntry
+    DependsOn: XYZNACL
+    Properties:
+      NetworkAclId:
+        Ref: XYZNACL
+      RuleNumber: '120'
+      Protocol: '6'
+      PortRange:
+        From: '443'
+        To: '443'
+      RuleAction: allow
+      Egress: 'false'
+      CidrBlock: 0.0.0.0/0
+  XYZNACLEntryIngress130:
+    Type: AWS::EC2::NetworkAclEntry
+    DependsOn: XYZNACL
+    Properties:
+      NetworkAclId:
+        Ref: XYZNACL
+      RuleNumber: '130'
+      Protocol: '6'
+      PortRange:
+        From: '1024'
+        To: '65535'
+      RuleAction: allow
+      Egress: 'false'
+      CidrBlock: 0.0.0.0/0
+  XYZNACLEntryEgress100:
+    Type: AWS::EC2::NetworkAclEntry
+    DependsOn: XYZNACL
+    Properties:
+      NetworkAclId:
+        Ref: XYZNACL
+      RuleNumber: '100'
+      Protocol: '6'
+      PortRange:
+        From: '22'
+        To: '22'
+      RuleAction: allow
+      Egress: 'true'
+      CidrBlock: 0.0.0.0/0
+  XYZNACLEntryEgress110:
+    Type: AWS::EC2::NetworkAclEntry
+    DependsOn: XYZNACL
+    Properties:
+      NetworkAclId:
+        Ref: XYZNACL
+      RuleNumber: '110'
+      Protocol: '6'
+      PortRange:
+        From: '80'
+        To: '80'
+      RuleAction: allow
+      Egress: 'true'
+      CidrBlock: 0.0.0.0/0
+  XYZNACLEntryEgress120:
+    Type: AWS::EC2::NetworkAclEntry
+    DependsOn: XYZNACL
+    Properties:
+      NetworkAclId:
+        Ref: XYZNACL
+      RuleNumber: '120'
+      Protocol: '6'
+      PortRange:
+        From: '443'
+        To: '443'
+      RuleAction: allow
+      Egress: 'true'
+      CidrBlock: 0.0.0.0/0
+  XYZNACLEntryEgress130:
+    Type: AWS::EC2::NetworkAclEntry
+    DependsOn: XYZNACL
+    Properties:
+      NetworkAclId:
+        Ref: XYZNACL
+      RuleNumber: '130'
+      Protocol: '6'
+      PortRange:
+        From: '1024'
+        To: '65535'
+      RuleAction: allow
+      Egress: 'true'
+      CidrBlock: 0.0.0.0/0
+
+  WebNACL:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId:
+        Ref: XYZVPC
+      Tags:
+        - Key: Name
+          Value: WebNACL
+  SubnetNetworkAclAssociationC:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      SubnetId:
+        Ref: WebServer1private
+      NetworkAclId:
+        Ref: WebNACL
+  SubnetNetworkAclAssociationD:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      SubnetId:
+        Ref: WebServer2private
+      NetworkAclId:
+        Ref: WebNACL
+  WebNACLEntryIngress100:
+    Type: AWS::EC2::NetworkAclEntry
+    DependsOn: WebNACL
+    Properties:
+      NetworkAclId:
+        Ref: WebNACL
+      RuleNumber: '100'
+      Protocol: '6'
+      PortRange:
+        From: '22'
+        To: '22'
+      RuleAction: allow
+      Egress: 'false'
+      CidrBlock: 10.0.0.0/16   #do i specify vpc cidr or private sub
+  WebNACLEntryIngress110:
+    Type: AWS::EC2::NetworkAclEntry
+    DependsOn: WebNACL
+    Properties:
+      NetworkAclId:
+        Ref: WebNACL
+      RuleNumber: '110'
+      Protocol: '6'
+      PortRange:
+        From: '80'
+        To: '80'
+      RuleAction: allow
+      Egress: 'false'
+      CidrBlock: 10.0.0.0/16    #do i specify vpc cidr or private sub
+  WebNACLEntryIngress120:
+    Type: AWS::EC2::NetworkAclEntry
+    DependsOn: WebNACL
+    Properties:
+      NetworkAclId:
+        Ref: WebNACL
+      RuleNumber: '120'
+      Protocol: '6'
+      PortRange:
+        From: '443'
+        To: '443'
+      RuleAction: allow
+      Egress: 'false'
+      CidrBlock: 10.0.0.0/16    #do i specify vpc cidr or private sub
+  WebNACLEntryIngress130:
+    Type: AWS::EC2::NetworkAclEntry
+    DependsOn: WebNACL
+    Properties:
+      NetworkAclId:
+        Ref: WebNACL
+      RuleNumber: '130'
+      Protocol: '6'
+      PortRange:
+        From: '1024'
+        To: '65535'
+      RuleAction: allow
+      Egress: 'false'
+      CidrBlock: 0.0.0.0/0
+  WebNACLEntryEgress110:
+    Type: AWS::EC2::NetworkAclEntry
+    DependsOn: WebNACL
+    Properties:
+      NetworkAclId:
+        Ref: WebNACL
+      RuleNumber: '110'
+      Protocol: '6'
+      PortRange:
+        From: '80'
+        To: '80'
+      RuleAction: allow
+      Egress: 'true'
+      CidrBlock: 0.0.0.0/0
+  WebNACLEntryEgress120:
+    Type: AWS::EC2::NetworkAclEntry
+    DependsOn: WebNACL
+    Properties:
+      NetworkAclId:
+        Ref: WebNACL
+      RuleNumber: '120'
+      Protocol: '6'
+      PortRange:
+        From: '443'
+        To: '443'
+      RuleAction: allow
+      Egress: 'true'
+      CidrBlock: 0.0.0.0/0
+  WebNACLEntryEgress130:
+    Type: AWS::EC2::NetworkAclEntry
+    DependsOn: WebNACL
+    Properties:
+      NetworkAclId:
+        Ref: WebNACL
+      RuleNumber: '130'
+      Protocol: '6'
+      PortRange:
+        From: '1024'
+        To: '65535'
+      RuleAction: allow
+      Egress: 'true'
+      CidrBlock: 10.0.0.0/16   #do i specify vpc cidr or private sub
+
+  RDSNACL:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId:
+        Ref: XYZVPC
+      Tags:
+        - Key: Name
+          Value: WebNACL
+  SubnetNetworkAclAssociationC:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      SubnetId:
+        Ref: RDSprivate
+      NetworkAclId:
+        Ref: RDSNACL
+  RDSNACLEntryIngress100:
+    Type: AWS::EC2::NetworkAclEntry
+    DependsOn: RDSNACL
+    Properties:
+      NetworkAclId:
+        Ref: DNSNACL
+      RuleNumber: '100'
+      Protocol: '6'
+      PortRange:
+        From: '22'
+        To: '22'
+      RuleAction: allow
+      Egress: 'false'
+      CidrBlock: 10.0.0.0/16
+  RDSNACLEntryIngress100:
+    Type: AWS::EC2::NetworkAclEntry
+    DependsOn: RDSNACL       #depend on rdsnacl or web
+    Properties:
+      NetworkAclId:
+        Ref: DNSNACL
+      RuleNumber: '100'
+      Protocol: '6'
+      PortRange:
+        From: '3306'
+        To: '3306'
+      RuleAction: allow
+      Egress: 'false'
+      CidrBlock: 10.0.0.0/16
+
+  MySQLBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        !Ref MySQLBucketName
+      LifecycleConfiguration:
+        Rules:
+        - ExpirationInDays: '90'
+          Status: Enabled
+      Tags:
+        Value:
+          Ref: Suffix
+
+  S3LoggingBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        !Ref ELBLogBucketName
+      LifecycleConfiguration:
+        Rules:
+        - ExpirationInDays: '365'
+          Status: Enabled
+      Tags:
+        Value:
+          Ref: ClientPrefix
+
+  S3LoggingBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket:
+        !Ref S3LoggingBucket
+      PolicyDocument:
+        Version: '2008-10-17'
+        Statement:
+        - Sid: !Ref ELBAccessLogs  #where do i specify my elb access???
+          Effect: Allow
+          Resource:  !Join [ '', ['arn:aws:s3:::', !Ref  S3LoggingBucket, '/*' ] ]
+          Principal:
+            AWS:
+             - '797873946194'  #what is all this
+             - '033677994240'
+             - '127311923021'
+             - '027434742980'
+             - '985666609251'
+          Action:
+           - s3:PutObject
+
+  PublicDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Origins:
+          - DomainName: !GetAtt http://${LoadBalancer.DNSName
+            Id: LoadBalancer
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${CloudFrontOriginIdentity}'
+        Enabled: 'true'
+        Comment: Some comment
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - GET
+            - HEAD
+          TargetOriginId: LoadBalancer
+          ForwardedValues:
+            QueryString: 'false'
+            Cookies:
+              Forward: none
+          ViewerProtocolPolicy: redirect-to-https
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: 'true'
+
+  WebFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      FileSystemTags:
+      - Key: Name
+        Value: !Join [ '', [!Ref  ClientPrefix, ] ]
+
+  MountTarget:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId:
+        Ref: WebFileSystem
+      SubnetId:
+        Ref: WebServer1private
+      SecurityGroups:
+        - Ref: WebServerSecurityGroup
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: String
+      SubnetIds:
+        Ref: RDS1private
+      Tags:
+        - Key: Name
+          Value: !Ref ClientPrefix
+
+  RDSDBParameterGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Description:  RDS Cluster Parameter Group
+      Family: mysql8.0
+
+  RDSCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      MasterUsername: 'admin'
+      MasterUserPassword: 'RdsAdmin11!'
+      Engine: MySQL
+      DBSubnetGroupName:
+        Ref: DBSubnetGroup
+      DBClusterParameterGroupName:
+        Ref: RDSDBClusterParameterGroup
+      VpcSecurityGroupIds:
+         Ref: XYZVPC
+      PreferredBackupWindow: 9:00-10:00
+      PreferredMaintenanceWindow: Sat:12:00-Sat:13:00
+      BackupRetentionPeriod: 14
+      Tags:
+      - Key: Name
+        Value: !Ref ClientPrefix
+
+
+  RDSDBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBSubnetGroupName:
+        Ref: DBSubnetGroup
+      DBParameterGroupName:
+        Ref: RDSDBParameterGroup
+      Engine: MySQL
+      DBClusterIdentifier:
+        Ref: RDSCluster
+      PubliclyAccessible: 'false'
+      AvailabilityZone:
+        Fn::Select:
+          - 0
+          - Fn::GetAZs: ""
+      DBInstanceClass:
+        Ref: DBInstanceType
+
+  MultiAZ:
+    Description: Multi-AZ master database
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    ConstraintDescription: must be true or false
+
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Open database for access
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '3306'
+        ToPort: '3306'
+        SourceSecurityGroupId:
+          Ref: WebServerSecurityGroup
+      VpcId:
+        Ref: XYZVPC
+
+
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets:
+        - Ref: XYZ1public
+        - Ref: XYZ2public
+      Name: load-balancer
+      Type: application
+      Scheme: internet-facing
+      SecurityGroups:
+        - Ref: LoadBalancerSecurityGroup
+      IpAddressType: ipv4
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn:
+            Ref: TargetGroup
+      LoadBalancerArn:
+        Ref: LoadBalancer
+      Port: '80'
+      Protocol: HTTP
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: '10'
+      HealthCheckPath: /phpinfo.php
+      HealthCheckPort: '80'
+      HealthCheckProtocol: HTTP
+      HealthyThresholdCount: '2'
+      Name: TG1
+      Port: '80'
+      Protocol: HTTP
+      UnhealthyThresholdCount: '2'
+      VpcId:
+        Ref: XYZVPC
+
+  BastionInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      ImageId: ami-04d29b6f966df1537
+      KeyName:
+        Ref: WebServerKeyName
+      NetworkInterfaces:
+        - GroupSet:
+            - Ref: BastionSecurityGroup
+          AssociatePublicIpAddress: 'true'
+          DeviceIndex: '0'
+          DeleteOnTermination: 'true'
+          SubnetId:
+            Ref: XYZ1public
+      Tags:
+        - Value: Bastion
+          Key: Name
+
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Bastion
+      VpcId:
+        Ref: XYZVPC
+      Tags:
+        - Key: Name
+          Value: BastionSG
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          FromPort: 22
+          IpProtocol: tcp
+          ToPort: 22
+
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: wordpress-elb
+      VpcId:
+        Ref: XYZVPC
+      Tags:
+        - Key: Name
+          Value: LoadBalancerSG
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          FromPort: 80
+          IpProtocol: tcp
+          ToPort: 80
+        - CidrIp: 0.0.0.0/0
+          FromPort: 443
+          IpProtocol: tcp
+          ToPort: 443
+  WebServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: wordpress-ec2
+      VpcId:
+        Ref: XYZVPC
+      Tags:
+        - Key: Name
+          Value: WebServerSG
+      SecurityGroupIngress:
+        - FromPort: 22
+          IpProtocol: tcp
+          SourceSecurityGroupId:
+            Ref: BastionSecurityGroup
+          ToPort: 22
+        - FromPort: 80
+          IpProtocol: tcp
+          SourceSecurityGroupId:
+            Ref: LoadBalancerSecurityGroup
+          ToPort: 80
+
+  LaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    DependsOn: XYZVPCGatewayAttachment
+    Properties:
+      ImageId: ami-04d29b6f966df1537
+      InstanceType: m5.large
+      SecurityGroups:
+        - Ref: WebServerSecurityGroup
+      KeyName:
+        Ref: WebServerKeyName
+      AssociatePublicIpAddress: 'false'
+      UserData:
+        'Fn::Base64':
+          'Fn::Join':
+            - ''
+            - - |
+                #!/bin/bash
+              - |
+                yum update -y
+              - |
+                yum install -y httpd php mysql php-mysql
+              - |
+                cd /var/www/html
+              - |
+                wget https://wordpress.org/latest.tar.gz
+              - |
+                tar -xzf latest.tar.gz
+              - |
+                cp wp-config-sample.php wp-config.php
+              - |
+                groupadd www
+              - |
+                usermod -a -G www ec2-user
+              - |
+                chown -R root:www /var/www
+              - |
+                chmod -R 2775 /var/www
+              - |
+                echo '<?php phpinfo(); ?>' > /var/www/html/phpinfo.php
+              - |
+                sed -i 's/database_name_here/${DatabaseName}/g' wp-config.php
+              - |
+                sed -i 's/localhost/${DB.Endpoint.Address}/g' wp-config.php
+              - |
+                sed -i 's/username_here/${DatabaseUser}/g' wp-config.php
+              - |
+                sed -i 's/password_here/${DatabasePassword}/g' wp-config.php
+              - |
+                systemctl start httpd
+              - |
+                systemctl enable httpd
+              - |
+                systemctl start mysqld
+              - |
+                systemctl enable mysqld
+      InstanceMonitoring: 'false'
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      TargetGroupARNs:
+        - Ref: TargetGroup
+      LaunchConfigurationName:
+        Ref: LaunchConfiguration
+      MinSize: '2'
+      MaxSize: '2'
+      DesiredCapacity: '2'
+      Cooldown: '300'
+      HealthCheckGracePeriod: '300'
+      HealthCheckType: ELB
+      VPCZoneIdentifier:
+        - Ref: WebLayer1private
+        - Ref: WebLayer2private
+      Tags:
+        - PropagateAtLaunch: 'true'
+          Value: instance-wordpress
+          Key: Name
+
+
+
+#not sure if i really need this
+
+
+
+
+
+Outputs:
+  PubSub:
+    Value:
+      Ref: XYZ1public
+    Export:
+      Name: Unique-SubnetId
+  pubIpAddress1:
+    Description: Public ip address of bastion instance
+    Value:
+      'Fn::GetAtt':
+        - BastionInstance
+        - PublicIp
+  privIpAddress1:
+    Description: Private ip address of bastion instance
+    Value:
+      'Fn::GetAtt':
+        - BastionInstance
+        - PrivateIp
+  DBEndpoint:
+    Description: DB RDS Endpoint
+    Value:
+      Fn::GetAtt:
+      - RDSCluster
+      - Endpoint.Address
+
+  WebServerUrl:
+    Description: URL of the load balancer for the sample service.
+    Value: !Sub http://${LoadBalancer.DNSName}
