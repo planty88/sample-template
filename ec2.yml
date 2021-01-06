@@ -1,0 +1,19 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Creating EC2 server
+Parameters:
+  InstanceType:
+    Description: 'Web instance type'
+    Type: String
+    Default: t2.micro
+
+  LatestAmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+
+Resources:
+ Instance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
